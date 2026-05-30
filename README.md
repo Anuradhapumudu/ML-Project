@@ -103,11 +103,11 @@ python ml_retail_project.py
 
 | Model | Test Accuracy | CV Accuracy | Best F1 |
 |---|---|---|---|
-| Logistic Regression | TBD | TBD | TBD |
-| Decision Tree | TBD | TBD | TBD |
-| KNN | TBD | TBD | TBD |
+| Logistic Regression | 0.9140 | 0.9114 | 0.9140 |
+| Decision Tree | 0.9777 | 0.9820 | 0.9777 |
+| **KNN (k=19)** ⭐ | **0.9927** | **0.9930** | **0.9927** |
 
-> Results populated after running `ml_retail_project.py`
+> 🏆 **Best Model: KNN (k=19)** with **99.27% test accuracy** and **99.30% CV accuracy**
 
 ---
 
