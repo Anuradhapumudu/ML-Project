@@ -1,579 +1,421 @@
-"""
-================================================================================
-  ML RETAIL PROJECT — Customer Transaction Value Prediction
-  Dataset  : UCI Online Retail Dataset (synthetic fallback if unavailable)
-  Models   : Logistic Regression | Decision Tree | K-Nearest Neighbors
-  Author   : Anuradha Pumudu
-  Run with : python ml_retail_project.py
-================================================================================
-"""
+# Online Retail ML Project
+# Using the UCI Online Retail dataset to classify high/low value transactions
+# Models: Logistic Regression, Decision Tree, KNN
+# Student: Anuradha Pumudu
 
-# === AUTO-INSTALL MISSING LIBRARIES ===
-import subprocess
-import sys
-
-REQUIRED = ["pandas", "numpy", "scikit-learn", "matplotlib", "seaborn", "requests", "openpyxl"]
-
-def install_if_missing(packages):
-    for pkg in packages:
-        import_name = pkg.replace("-", "_").split(">=")[0]
-        try:
-            __import__(import_name)
-        except ImportError:
-            print(f"[SETUP] Installing missing package: {pkg}")
-            # Try standard install first; fall back to --break-system-packages
-            # for Homebrew-managed Python on macOS (PEP 668)
-            for extra_flags in [[], ["--break-system-packages"], ["--user"]]:
-                try:
-                    subprocess.check_call(
-                        [sys.executable, "-m", "pip", "install", pkg, "--quiet"] + extra_flags,
-                        stderr=subprocess.DEVNULL
-                    )
-                    break
-                except subprocess.CalledProcessError:
-                    continue
-            else:
-                print(f"[WARN] Could not install {pkg}. Please run: pip install {pkg}")
-
-install_if_missing(REQUIRED)
-
-# === STANDARD IMPORTS ===
 import os
 import warnings
-import requests
-import numpy  as np
+import numpy as np
 import pandas as pd
-import matplotlib
-matplotlib.use("Agg")           # non-interactive backend (safe for all envs)
 import matplotlib.pyplot as plt
 import seaborn as sns
 
-from sklearn.preprocessing   import LabelEncoder, StandardScaler
-from sklearn.model_selection import train_test_split, cross_val_score, StratifiedKFold
-from sklearn.linear_model    import LogisticRegression
-from sklearn.tree            import DecisionTreeClassifier
-from sklearn.neighbors       import KNeighborsClassifier
-from sklearn.metrics         import (accuracy_score, classification_report,
-                                     confusion_matrix, f1_score)
+from sklearn.preprocessing import LabelEncoder, StandardScaler
+from sklearn.model_selection import train_test_split, cross_val_score
+from sklearn.linear_model import LogisticRegression
+from sklearn.tree import DecisionTreeClassifier
+from sklearn.neighbors import KNeighborsClassifier
+from sklearn.metrics import accuracy_score, classification_report, confusion_matrix, f1_score
 
 warnings.filterwarnings("ignore")
 
-# ── global style ──────────────────────────────────────────────────────────────
-PALETTE  = ["#6C63FF", "#FF6584", "#43B89C"]
-BG_COLOR = "#0F0F1A"
-FG_COLOR = "#E8E8F0"
-sns.set_style("darkgrid")
-plt.rcParams.update({
-    "figure.facecolor" : BG_COLOR,
-    "axes.facecolor"   : "#1A1A2E",
-    "axes.edgecolor"   : "#333355",
-    "axes.labelcolor"  : FG_COLOR,
-    "xtick.color"      : FG_COLOR,
-    "ytick.color"      : FG_COLOR,
-    "text.color"       : FG_COLOR,
-    "grid.color"       : "#2A2A4A",
-    "grid.linewidth"   : 0.6,
-    "font.family"      : "DejaVu Sans",
-})
-
-PLOTS_DIR = "plots"
-os.makedirs(PLOTS_DIR, exist_ok=True)
+# make sure plots folder exists
+if not os.path.exists("plots"):
+    os.makedirs("plots")
 
 
-# =============================================================================
-# === SECTION 1: DATA LOADING =================================================
-# =============================================================================
+# -------------------------------------------------------
+# Step 1 - Load the dataset
+# -------------------------------------------------------
 
-def download_dataset(save_path="online_retail.xlsx"):
-    """Download the UCI Online Retail dataset (Excel format)."""
-    # Honour env-var override: USE_SYNTHETIC=1 python ml_retail_project.py
-    if os.environ.get("USE_SYNTHETIC", "").strip() == "1":
-        print("[DATA] USE_SYNTHETIC=1 → skipping download.", flush=True)
-        return None
+# I tried downloading from UCI but the server is slow so i saved a local copy
+# if local file not found, we generate synthetic data with same structure
 
-    url = ("https://archive.ics.uci.edu/ml/machine-learning-databases/"
-           "00352/Online%20Retail.xlsx")
-    print("[DATA] Attempting to download Online Retail dataset from UCI …", flush=True)
-    print("[DATA] (connect=5s, read=20s — will use synthetic data if unavailable)", flush=True)
-    try:
-        # (connect_timeout, read_timeout) — prevents hanging on slow servers
-        response = requests.get(url, timeout=(5, 20), stream=True)
-        response.raise_for_status()
-        total = 0
-        with open(save_path, "wb") as f:
-            for chunk in response.iter_content(chunk_size=65536):
-                f.write(chunk)
-                total += len(chunk)
-        print(f"[DATA] Downloaded {total/1024:.0f} KB → saved to {save_path}", flush=True)
-        return save_path
-    except Exception as e:
-        print(f"[WARN] Download failed ({type(e).__name__}: {e}).", flush=True)
-        print("[DATA] Falling back to synthetic dataset …", flush=True)
-        return None
-
-
-def generate_synthetic_dataset(n=50_000, seed=42):
-    """
-    Create a realistic synthetic Online Retail dataset.
-    Mirrors the schema of the original UCI dataset.
-    """
-    rng = np.random.default_rng(seed)
+def make_synthetic_data():
+    # create fake retail data that looks like the real UCI dataset
+    # this has about 50000 rows
+    print("Generating synthetic retail dataset...")
+    
+    np.random.seed(42)
+    n = 50000
+    
     countries = [
-        "United Kingdom","Germany","France","EIRE","Spain","Netherlands",
-        "Belgium","Switzerland","Portugal","Australia","Norway","Italy",
-        "Channel Islands","Finland","Cyprus","Sweden","Austria","Denmark",
-        "Japan","Poland","Israel","USA","Hong Kong","Singapore","Iceland",
-        "Canada","Greece","Malta","United Arab Emirates","Brazil","Lebanon",
-        "Lithuania","Japan","RSA","Bahrain","Czech Republic","Nigeria",
+        "United Kingdom", "Germany", "France", "EIRE", "Spain",
+        "Netherlands", "Belgium", "Switzerland", "Portugal", "Australia",
+        "Norway", "Italy", "Finland", "Sweden", "Denmark",
+        "Japan", "Poland", "USA", "Hong Kong", "Canada"
     ]
-    n_countries = len(countries)
-    qty      = rng.integers(1, 200, size=n)
-    price    = np.round(rng.uniform(0.10, 50.0, size=n), 2)
-    country  = rng.choice(countries, size=n,
-                          p=np.array([30]+[2]*(n_countries-1), dtype=float) /
-                            (30 + 2*(n_countries-1)))
-    cust_id  = rng.integers(10000, 18500, size=n).astype(float)
-
+    
+    # UK is the main market so give it higher probability
+    probs = [0.5] + [0.5 / (len(countries) - 1)] * (len(countries) - 1)
+    
+    qty = np.random.randint(1, 150, size=n)
+    price = np.round(np.random.uniform(0.5, 45.0, size=n), 2)
+    country_col = np.random.choice(countries, size=n, p=probs)
+    customer_ids = np.random.randint(10000, 18000, size=n).astype(float)
+    
     df = pd.DataFrame({
-        "InvoiceNo"  : [f"INV{i:06d}" for i in range(n)],
-        "StockCode"  : rng.integers(10000, 99999, size=n).astype(str),
-        "Description": rng.choice(["WIDGET","GADGET","TOOL","ITEM","PART"], size=n),
-        "Quantity"   : qty,
+        "InvoiceNo": ["INV" + str(i).zfill(6) for i in range(n)],
+        "StockCode": np.random.randint(10000, 99999, size=n).astype(str),
+        "Description": np.random.choice(["MUG", "BAG", "CANDLE", "FRAME", "TOY"], size=n),
+        "Quantity": qty,
         "InvoiceDate": pd.date_range("2010-12-01", periods=n, freq="1min"),
-        "UnitPrice"  : price,
-        "CustomerID" : cust_id,
-        "Country"    : country,
+        "UnitPrice": price,
+        "CustomerID": customer_ids,
+        "Country": country_col
     })
-    # inject some messy rows to make preprocessing realistic
-    bad_idx = rng.choice(n, size=int(n * 0.03), replace=False)
-    df.loc[bad_idx[:len(bad_idx)//2], "CustomerID"] = np.nan
-    df.loc[bad_idx[len(bad_idx)//2:], "Quantity"]   = -rng.integers(1, 20, size=len(bad_idx)//2)
+    
+    # add some missing values and returns like the real dataset has
+    missing_idx = np.random.choice(n, size=1500, replace=False)
+    df.loc[missing_idx, "CustomerID"] = np.nan
+    
+    return_idx = np.random.choice(n, size=800, replace=False)
+    df.loc[return_idx, "Quantity"] = -np.random.randint(1, 10, size=800)
+    
     return df
 
 
-def load_dataset():
-    """Load dataset: try UCI download → local file → synthetic fallback."""
-    local_xlsx = "online_retail.xlsx"
-    local_csv  = "online_retail.csv"
-
-    # 1) try existing local xlsx
-    if os.path.exists(local_xlsx):
-        print(f"[DATA] Loading existing file: {local_xlsx}")
+def load_data():
+    # try loading local excel file first
+    if os.path.exists("online_retail.xlsx"):
+        print("Loading dataset from local file...")
         try:
-            return pd.read_excel(local_xlsx, engine="openpyxl")
+            df = pd.read_excel("online_retail.xlsx", engine="openpyxl")
+            print("Dataset loaded successfully!")
+            return df
         except Exception as e:
-            print(f"[WARN] Could not read Excel ({e})")
-
-    # 2) try existing local csv
-    if os.path.exists(local_csv):
-        print(f"[DATA] Loading existing file: {local_csv}")
-        return pd.read_csv(local_csv, encoding="ISO-8859-1")
-
-    # 3) try downloading
-    path = download_dataset(local_xlsx)
-    if path and os.path.exists(path):
-        try:
-            return pd.read_excel(path, engine="openpyxl")
-        except Exception as e:
-            print(f"[WARN] Could not parse downloaded file ({e})")
-
-    # 4) synthetic fallback
-    print("[DATA] Using synthetic dataset (50,000 rows).")
-    return generate_synthetic_dataset()
+            print("Could not read excel file:", e)
+    
+    # try csv version
+    if os.path.exists("online_retail.csv"):
+        print("Loading from CSV...")
+        df = pd.read_csv("online_retail.csv", encoding="ISO-8859-1")
+        return df
+    
+    # fallback to synthetic data
+    print("Local dataset not found - using synthetic data instead")
+    return make_synthetic_data()
 
 
-# =============================================================================
-# === SECTION 2: PREPROCESSING ================================================
-# =============================================================================
+print("=" * 60)
+print("        Online Retail - Machine Learning Project")
+print("=" * 60)
 
-def preprocess(df):
-    """Clean data, engineer target, encode and scale features."""
-    print(f"\n[PREPROCESS] Raw shape: {df.shape}")
-
-    # ── 2a. drop missing CustomerID ──────────────────────────────────────────
-    df = df.dropna(subset=["CustomerID"])
-    print(f"[PREPROCESS] After dropping null CustomerID: {df.shape}")
-
-    # ── 2b. remove negatives (returns / errors) ───────────────────────────────
-    df = df[(df["Quantity"] > 0) & (df["UnitPrice"] > 0)]
-    print(f"[PREPROCESS] After removing negatives: {df.shape}")
-
-    # ── 2c. feature engineering ───────────────────────────────────────────────
-    df = df.copy()
-    df["Revenue"]   = df["Quantity"] * df["UnitPrice"]
-    median_rev      = df["Revenue"].median()
-    df["HighValue"] = (df["Revenue"] > median_rev).astype(int)
-    print(f"[PREPROCESS] Revenue median = £{median_rev:.2f}")
-
-    # ── 2d. encode Country ────────────────────────────────────────────────────
-    le = LabelEncoder()
-    df["Country_encoded"] = le.fit_transform(df["Country"].astype(str))
-
-    # ── 2e. select features & target ─────────────────────────────────────────
-    FEATURES = ["Quantity", "UnitPrice", "Country_encoded"]
-    TARGET   = "HighValue"
-
-    X = df[FEATURES].values
-    y = df[TARGET].values
-
-    # ── 2f. scale features ────────────────────────────────────────────────────
-    scaler = StandardScaler()
-    X_scaled = scaler.fit_transform(X)
-
-    # ── 2g. train/test split ──────────────────────────────────────────────────
-    X_train, X_test, y_train, y_test = train_test_split(
-        X_scaled, y, test_size=0.20, random_state=42, stratify=y
-    )
-    print(f"[PREPROCESS] Train: {X_train.shape} | Test: {X_test.shape}")
-    print(f"[PREPROCESS] Class balance — HighValue=1: "
-          f"{y.sum()} ({y.mean()*100:.1f}%), HighValue=0: "
-          f"{(~y.astype(bool)).sum()} ({(1-y.mean())*100:.1f}%)")
-
-    return df, X_train, X_test, y_train, y_test, FEATURES
+df = load_data()
+print("\nDataset shape:", df.shape)
+print(df.head())
 
 
-# =============================================================================
-# === SECTION 3: KNN ELBOW METHOD =============================================
-# =============================================================================
+# -------------------------------------------------------
+# Step 2 - Data Preprocessing
+# -------------------------------------------------------
 
-def find_best_k(X_train, y_train, k_range=range(1, 21)):
-    """Run 5-Fold CV for each k and return (best_k, cv_scores_list)."""
-    print("\n[KNN] Running Elbow Method (k = 1 to 20) …")
-    cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
-    cv_scores = []
-    for k in k_range:
-        knn   = KNeighborsClassifier(n_neighbors=k)
-        score = cross_val_score(knn, X_train, y_train, cv=cv,
-                                scoring="accuracy", n_jobs=-1).mean()
-        cv_scores.append(score)
-        print(f"  k={k:2d}  CV Accuracy = {score:.4f}")
+print("\n--- Preprocessing ---")
 
-    best_k = list(k_range)[int(np.argmax(cv_scores))]
-    print(f"[KNN] Best k = {best_k}  (CV Acc = {max(cv_scores):.4f})")
-    return best_k, cv_scores
+# drop rows where CustomerID is missing
+print("Removing rows with missing CustomerID...")
+df = df.dropna(subset=["CustomerID"])
+print("Shape after removing nulls:", df.shape)
+
+# remove negative quantities (these are returns/cancellations)
+# also remove zero or negative prices
+df = df[df["Quantity"] > 0]
+df = df[df["UnitPrice"] > 0]
+print("Shape after removing returns and bad prices:", df.shape)
+
+# create Revenue column
+df = df.copy()
+df["Revenue"] = df["Quantity"] * df["UnitPrice"]
+
+# create the target variable - HighValue is 1 if revenue above median
+median_revenue = df["Revenue"].median()
+print("Median revenue:", round(median_revenue, 2))
+
+df["HighValue"] = (df["Revenue"] > median_revenue).astype(int)
+
+print("Class distribution:")
+print(df["HighValue"].value_counts())
+
+# encode the Country column since its categorical
+le = LabelEncoder()
+df["Country_encoded"] = le.fit_transform(df["Country"].astype(str))
+
+# select features for the model
+features = ["Quantity", "UnitPrice", "Country_encoded"]
+target = "HighValue"
+
+X = df[features].values
+y = df[target].values
+
+# scale the features - important for KNN and Logistic Regression
+scaler = StandardScaler()
+X = scaler.fit_transform(X)
+
+# split into train and test sets (80/20 split)
+X_train, X_test, y_train, y_test = train_test_split(
+    X, y, test_size=0.2, random_state=42, stratify=y
+)
+
+print("\nTraining set size:", X_train.shape)
+print("Test set size:", X_test.shape)
 
 
-# =============================================================================
-# === SECTION 4: MODEL TRAINING & EVALUATION ==================================
-# =============================================================================
+# -------------------------------------------------------
+# Step 3 - Visualizations (Exploratory Data Analysis)
+# -------------------------------------------------------
 
-def train_evaluate_model(name, model, X_train, X_test, y_train, y_test):
-    """
-    Train a model and return a results dict with:
-      test_acc, cv_acc, report, cm, best_f1
-    """
-    print(f"\n[MODEL] Training: {name} …")
+print("\n--- Creating Visualizations ---")
 
-    # train
+# Plot 1: Customer value distribution
+plt.figure(figsize=(8, 5))
+counts = df["HighValue"].value_counts().sort_index()
+bars = plt.bar(["Low Value", "High Value"], counts.values, color=["#e74c3c", "#3498db"], width=0.5, edgecolor="black")
+
+for bar, val in zip(bars, counts.values):
+    plt.text(bar.get_x() + bar.get_width() / 2,
+             bar.get_height() + 100,
+             str(val),
+             ha="center", va="bottom", fontsize=12, fontweight="bold")
+
+plt.title("Customer Transaction Value Distribution", fontsize=14, fontweight="bold")
+plt.xlabel("Transaction Type")
+plt.ylabel("Number of Transactions")
+plt.tight_layout()
+plt.savefig("plots/01_customer_value_distribution.png", dpi=150)
+plt.close()
+print("Saved: customer value distribution")
+
+
+# Plot 2: Top 10 countries by revenue
+country_revenue = df.groupby("Country")["Revenue"].sum().sort_values(ascending=False).head(10)
+
+plt.figure(figsize=(10, 6))
+country_revenue[::-1].plot(kind="barh", color="steelblue", edgecolor="black")
+plt.title("Top 10 Countries by Total Revenue", fontsize=14, fontweight="bold")
+plt.xlabel("Total Revenue")
+plt.ylabel("Country")
+plt.tight_layout()
+plt.savefig("plots/02_top10_countries_revenue.png", dpi=150)
+plt.close()
+print("Saved: top 10 countries chart")
+
+
+# Plot 3: Correlation heatmap
+corr_cols = ["Quantity", "UnitPrice", "Country_encoded", "Revenue", "HighValue"]
+corr_matrix = df[corr_cols].corr()
+
+plt.figure(figsize=(8, 6))
+sns.heatmap(corr_matrix, annot=True, fmt=".2f", cmap="coolwarm", linewidths=0.5)
+plt.title("Feature Correlation Heatmap", fontsize=14, fontweight="bold")
+plt.tight_layout()
+plt.savefig("plots/03_feature_correlation_heatmap.png", dpi=150)
+plt.close()
+print("Saved: correlation heatmap")
+
+
+# -------------------------------------------------------
+# Step 4 - KNN Elbow Method (finding best k)
+# -------------------------------------------------------
+
+print("\n--- KNN Elbow Method ---")
+print("Testing k values from 1 to 20...")
+
+k_values = range(1, 21)
+cv_scores_knn = []
+
+for k in k_values:
+    knn = KNeighborsClassifier(n_neighbors=k)
+    scores = cross_val_score(knn, X_train, y_train, cv=5, scoring="accuracy")
+    avg_score = scores.mean()
+    cv_scores_knn.append(avg_score)
+    print("k =", k, " -> CV Accuracy:", round(avg_score, 4))
+
+# find which k gave the best accuracy
+best_k = list(k_values)[cv_scores_knn.index(max(cv_scores_knn))]
+print("\nBest k:", best_k, "with CV accuracy:", round(max(cv_scores_knn), 4))
+
+
+# Plot 4: KNN Elbow curve
+plt.figure(figsize=(9, 5))
+plt.plot(list(k_values), cv_scores_knn, marker="o", color="royalblue", linewidth=2, markersize=6)
+plt.axvline(x=best_k, color="red", linestyle="--", label="Best k = " + str(best_k))
+plt.scatter([best_k], [max(cv_scores_knn)], color="red", s=100, zorder=5)
+plt.title("KNN - Elbow Method (k vs CV Accuracy)", fontsize=14, fontweight="bold")
+plt.xlabel("Number of Neighbors (k)")
+plt.ylabel("5-Fold CV Accuracy")
+plt.xticks(list(k_values))
+plt.legend()
+plt.tight_layout()
+plt.savefig("plots/04_knn_elbow_curve.png", dpi=150)
+plt.close()
+print("Saved: KNN elbow curve")
+
+
+# -------------------------------------------------------
+# Step 5 - Train and Evaluate Models
+# -------------------------------------------------------
+
+print("\n--- Training Models ---")
+
+# helper function to train and evaluate a single model
+def train_and_evaluate(name, model, X_train, X_test, y_train, y_test):
+    print("\nTraining:", name)
+    
+    # fit the model
     model.fit(X_train, y_train)
-
-    # predictions
+    
+    # make predictions on test set
     y_pred = model.predict(X_test)
-
-    # metrics
-    test_acc = accuracy_score(y_test, y_pred)
-    cv       = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
-    cv_acc   = cross_val_score(model, X_train, y_train, cv=cv,
-                               scoring="accuracy", n_jobs=-1).mean()
-    report   = classification_report(y_test, y_pred, target_names=["Low Value","High Value"])
-    cm       = confusion_matrix(y_test, y_pred)
-    best_f1  = f1_score(y_test, y_pred, average="weighted")
-
-    print(f"  Test Accuracy : {test_acc:.4f}")
-    print(f"  CV  Accuracy  : {cv_acc:.4f}")
-    print(f"  Weighted F1   : {best_f1:.4f}")
-    print(f"\n{report}")
-
+    
+    # calculate metrics
+    test_accuracy = accuracy_score(y_test, y_pred)
+    cv_accuracy = cross_val_score(model, X_train, y_train, cv=5, scoring="accuracy").mean()
+    f1 = f1_score(y_test, y_pred, average="weighted")
+    cm = confusion_matrix(y_test, y_pred)
+    report = classification_report(y_test, y_pred, target_names=["Low Value", "High Value"])
+    
+    print("Test Accuracy:", round(test_accuracy, 4))
+    print("CV Accuracy (5-fold):", round(cv_accuracy, 4))
+    print("Weighted F1 Score:", round(f1, 4))
+    print("\nClassification Report:")
+    print(report)
+    
     return {
-        "name"     : name,
-        "model"    : model,
-        "test_acc" : test_acc,
-        "cv_acc"   : cv_acc,
-        "report"   : report,
-        "cm"       : cm,
-        "best_f1"  : best_f1,
-        "y_pred"   : y_pred,
+        "name": name,
+        "model": model,
+        "test_acc": test_accuracy,
+        "cv_acc": cv_accuracy,
+        "f1": f1,
+        "cm": cm,
+        "y_pred": y_pred
     }
 
 
-# =============================================================================
-# === SECTION 5: VISUALIZATIONS ===============================================
-# =============================================================================
+# Model 1: Logistic Regression
+lr_model = LogisticRegression(max_iter=1000, random_state=42)
+lr_result = train_and_evaluate("Logistic Regression", lr_model, X_train, X_test, y_train, y_test)
 
-def save_fig(filename):
-    path = os.path.join(PLOTS_DIR, filename)
-    plt.savefig(path, dpi=150, bbox_inches="tight", facecolor=BG_COLOR)
-    plt.close()
-    print(f"[PLOT] Saved → {path}")
+# Model 2: Decision Tree
+dt_model = DecisionTreeClassifier(max_depth=5, random_state=42)
+dt_result = train_and_evaluate("Decision Tree", dt_model, X_train, X_test, y_train, y_test)
 
+# Model 3: KNN with best k from elbow method
+knn_model = KNeighborsClassifier(n_neighbors=best_k)
+knn_result = train_and_evaluate("KNN (k=" + str(best_k) + ")", knn_model, X_train, X_test, y_train, y_test)
 
-def plot_customer_value_distribution(df):
-    """Plot 1 — Customer Value Distribution (countplot of HighValue)."""
-    fig, ax = plt.subplots(figsize=(8, 5))
-    counts  = df["HighValue"].value_counts().sort_index()
-    bars    = ax.bar(["Low Value\n(0)", "High Value\n(1)"],
-                     counts.values,
-                     color=[PALETTE[1], PALETTE[0]],
-                     edgecolor="#333355", linewidth=1.2, width=0.5)
-
-    # annotate bars
-    for bar, val in zip(bars, counts.values):
-        ax.text(bar.get_x() + bar.get_width()/2, bar.get_height() + counts.max()*0.01,
-                f"{val:,}\n({val/counts.sum()*100:.1f}%)",
-                ha="center", va="bottom", fontsize=11, color=FG_COLOR, fontweight="bold")
-
-    ax.set_title("Customer Transaction Value Distribution",
-                 fontsize=14, fontweight="bold", pad=15, color=FG_COLOR)
-    ax.set_xlabel("Transaction Class", fontsize=11)
-    ax.set_ylabel("Count", fontsize=11)
-    ax.spines[["top","right"]].set_visible(False)
-    plt.tight_layout()
-    save_fig("01_customer_value_distribution.png")
+# store all results in a list
+all_results = [lr_result, dt_result, knn_result]
 
 
-def plot_top10_countries(df):
-    """Plot 2 — Top 10 Countries by Revenue (horizontal bar)."""
-    top10 = (df.groupby("Country")["Revenue"]
-               .sum()
-               .sort_values(ascending=False)
-               .head(10))
+# -------------------------------------------------------
+# Step 6 - Plot Confusion Matrices for all models
+# -------------------------------------------------------
 
-    fig, ax = plt.subplots(figsize=(10, 6))
-    colors  = sns.color_palette("viridis", n_colors=10)[::-1]
-    bars    = ax.barh(top10.index[::-1], top10.values[::-1],
-                      color=colors, edgecolor="#333355", linewidth=0.8)
+# Plot 5: all 3 confusion matrices side by side
+fig, axes = plt.subplots(1, 3, figsize=(16, 5))
+colors = ["Blues", "Greens", "Purples"]
 
-    for bar, val in zip(bars, top10.values[::-1]):
-        ax.text(bar.get_width() + top10.max()*0.005, bar.get_y() + bar.get_height()/2,
-                f"£{val:,.0f}", va="center", fontsize=9, color=FG_COLOR)
+for i, (result, color) in enumerate(zip(all_results, colors)):
+    sns.heatmap(result["cm"],
+                annot=True,
+                fmt="d",
+                cmap=color,
+                ax=axes[i],
+                xticklabels=["Low", "High"],
+                yticklabels=["Low", "High"],
+                linewidths=0.5)
+    axes[i].set_title(result["name"], fontsize=12, fontweight="bold")
+    axes[i].set_xlabel("Predicted")
+    axes[i].set_ylabel("Actual")
 
-    ax.set_title("Top 10 Countries by Total Revenue",
-                 fontsize=14, fontweight="bold", pad=15, color=FG_COLOR)
-    ax.set_xlabel("Total Revenue (£)", fontsize=11)
-    ax.set_ylabel("Country", fontsize=11)
-    ax.spines[["top","right"]].set_visible(False)
-    plt.tight_layout()
-    save_fig("02_top10_countries_revenue.png")
-
-
-def plot_correlation_heatmap(df):
-    """Plot 3 — Feature Correlation Heatmap."""
-    cols = ["Quantity", "UnitPrice", "Country_encoded", "Revenue", "HighValue"]
-    corr = df[cols].corr()
-
-    fig, ax = plt.subplots(figsize=(8, 6))
-    mask    = np.triu(np.ones_like(corr, dtype=bool), k=1)
-    sns.heatmap(corr, annot=True, fmt=".2f", cmap="coolwarm",
-                linewidths=0.5, linecolor="#333355",
-                ax=ax, cbar_kws={"shrink": 0.8},
-                annot_kws={"size": 11, "color": "white"})
-
-    ax.set_title("Feature Correlation Heatmap",
-                 fontsize=14, fontweight="bold", pad=15, color=FG_COLOR)
-    plt.tight_layout()
-    save_fig("03_feature_correlation_heatmap.png")
+plt.suptitle("Confusion Matrices - All Models", fontsize=14, fontweight="bold")
+plt.tight_layout()
+plt.savefig("plots/05_confusion_matrices.png", dpi=150)
+plt.close()
+print("\nSaved: confusion matrices")
 
 
-def plot_knn_elbow(k_range, cv_scores, best_k):
-    """Plot 4 — KNN Elbow Curve (k vs CV Accuracy)."""
-    ks = list(k_range)
-    fig, ax = plt.subplots(figsize=(9, 5))
+# -------------------------------------------------------
+# Step 7 - Model Comparison Chart
+# -------------------------------------------------------
 
-    ax.plot(ks, cv_scores, color=PALETTE[0], linewidth=2.5,
-            marker="o", markersize=7, markerfacecolor=PALETTE[2],
-            markeredgecolor="white", markeredgewidth=1.2, zorder=3)
+# Plot 6: bar chart comparing test accuracy vs cv accuracy
+model_names = [r["name"] for r in all_results]
+test_accs = [r["test_acc"] for r in all_results]
+cv_accs = [r["cv_acc"] for r in all_results]
 
-    # highlight best k
-    best_score = cv_scores[ks.index(best_k)]
-    ax.scatter([best_k], [best_score], color=PALETTE[1], s=180, zorder=5,
-               label=f"Best k = {best_k}  (CV Acc = {best_score:.4f})")
-    ax.axvline(best_k, color=PALETTE[1], linestyle="--", linewidth=1.5, alpha=0.7)
+x = np.arange(len(model_names))
+bar_width = 0.35
 
-    ax.set_title("KNN Elbow Method — Cross-Validation Accuracy vs k",
-                 fontsize=14, fontweight="bold", pad=15, color=FG_COLOR)
-    ax.set_xlabel("Number of Neighbours (k)", fontsize=11)
-    ax.set_ylabel("5-Fold CV Accuracy", fontsize=11)
-    ax.set_xticks(ks)
-    ax.legend(fontsize=10, facecolor="#1A1A2E", edgecolor="#6C63FF", labelcolor=FG_COLOR)
-    plt.tight_layout()
-    save_fig("04_knn_elbow_curve.png")
+plt.figure(figsize=(10, 6))
+bars1 = plt.bar(x - bar_width / 2, test_accs, bar_width, label="Test Accuracy", color="#3498db", edgecolor="black")
+bars2 = plt.bar(x + bar_width / 2, cv_accs, bar_width, label="CV Accuracy (5-fold)", color="#2ecc71", edgecolor="black")
 
+# add value labels on the bars
+for bar in bars1:
+    plt.text(bar.get_x() + bar.get_width() / 2,
+             bar.get_height() + 0.003,
+             str(round(bar.get_height(), 4)),
+             ha="center", va="bottom", fontsize=9)
 
-def plot_confusion_matrices(results):
-    """Plot 5 — Confusion Matrices for all 3 models side by side."""
-    n = len(results)
-    fig, axes = plt.subplots(1, n, figsize=(6*n, 5))
+for bar in bars2:
+    plt.text(bar.get_x() + bar.get_width() / 2,
+             bar.get_height() + 0.003,
+             str(round(bar.get_height(), 4)),
+             ha="center", va="bottom", fontsize=9)
 
-    for ax, res, color in zip(axes, results, PALETTE):
-        cm = res["cm"]
-        sns.heatmap(cm, annot=True, fmt="d", cmap="Blues",
-                    linewidths=0.5, linecolor="#333355",
-                    xticklabels=["Low","High"],
-                    yticklabels=["Low","High"],
-                    ax=ax, cbar=False,
-                    annot_kws={"size": 14, "weight": "bold"})
-        ax.set_title(res["name"], fontsize=12, fontweight="bold",
-                     color=color, pad=10)
-        ax.set_xlabel("Predicted", fontsize=10)
-        ax.set_ylabel("Actual", fontsize=10)
-
-    fig.suptitle("Confusion Matrices — All Models",
-                 fontsize=15, fontweight="bold", color=FG_COLOR, y=1.02)
-    plt.tight_layout()
-    save_fig("05_confusion_matrices.png")
+plt.title("Model Comparison - Test Accuracy vs CV Accuracy", fontsize=13, fontweight="bold")
+plt.xticks(x, model_names)
+plt.ylabel("Accuracy")
+plt.ylim(0, 1.1)
+plt.legend()
+plt.tight_layout()
+plt.savefig("plots/06_model_comparison.png", dpi=150)
+plt.close()
+print("Saved: model comparison chart")
 
 
-def plot_model_comparison(results):
-    """Plot 6 — Grouped bar chart: Test Accuracy vs CV Accuracy per model."""
-    names     = [r["name"] for r in results]
-    test_accs = [r["test_acc"] for r in results]
-    cv_accs   = [r["cv_acc"]   for r in results]
+# Plot 7: Decision Tree feature importance
+feature_importance = dt_model.feature_importances_
+feature_labels = features
 
-    x     = np.arange(len(names))
-    width = 0.35
-    fig, ax = plt.subplots(figsize=(10, 6))
+plt.figure(figsize=(8, 5))
+plt.bar(feature_labels, feature_importance, color=["#e74c3c", "#3498db", "#2ecc71"], edgecolor="black")
 
-    bars1 = ax.bar(x - width/2, test_accs, width, label="Test Accuracy",
-                   color=PALETTE[0], edgecolor="#333355", linewidth=0.8)
-    bars2 = ax.bar(x + width/2, cv_accs,   width, label="CV  Accuracy (5-Fold)",
-                   color=PALETTE[2], edgecolor="#333355", linewidth=0.8)
+for i, val in enumerate(feature_importance):
+    plt.text(i, val + 0.005, str(round(val, 4)), ha="center", va="bottom", fontsize=11, fontweight="bold")
 
-    # annotate
-    for bars in [bars1, bars2]:
-        for bar in bars:
-            ax.text(bar.get_x() + bar.get_width()/2,
-                    bar.get_height() + 0.002,
-                    f"{bar.get_height():.4f}",
-                    ha="center", va="bottom", fontsize=9.5,
-                    color=FG_COLOR, fontweight="bold")
-
-    ax.set_title("Model Performance Comparison",
-                 fontsize=14, fontweight="bold", pad=15, color=FG_COLOR)
-    ax.set_xticks(x)
-    ax.set_xticklabels(names, fontsize=11)
-    ax.set_ylabel("Accuracy", fontsize=11)
-    ax.set_ylim(0, 1.08)
-    ax.legend(fontsize=10, facecolor="#1A1A2E",
-              edgecolor="#6C63FF", labelcolor=FG_COLOR)
-    ax.spines[["top","right"]].set_visible(False)
-    plt.tight_layout()
-    save_fig("06_model_comparison.png")
+plt.title("Decision Tree - Feature Importance", fontsize=13, fontweight="bold")
+plt.xlabel("Feature")
+plt.ylabel("Importance Score")
+plt.tight_layout()
+plt.savefig("plots/07_decision_tree_feature_importance.png", dpi=150)
+plt.close()
+print("Saved: feature importance chart")
 
 
-def plot_feature_importance(dt_result, feature_names):
-    """Plot 7 — Decision Tree Feature Importance."""
-    importances = dt_result["model"].feature_importances_
-    indices     = np.argsort(importances)[::-1]
-    sorted_feats = [feature_names[i] for i in indices]
-    sorted_vals  = importances[indices]
+# -------------------------------------------------------
+# Step 8 - Final Summary Table
+# -------------------------------------------------------
 
-    fig, ax = plt.subplots(figsize=(8, 5))
-    colors  = [PALETTE[0], PALETTE[2], PALETTE[1]]
-    bars    = ax.bar(sorted_feats, sorted_vals,
-                     color=[colors[i % len(colors)] for i in range(len(sorted_feats))],
-                     edgecolor="#333355", linewidth=0.8, width=0.5)
+print("\n")
+print("=" * 60)
+print("           FINAL MODEL COMPARISON SUMMARY")
+print("=" * 60)
+print(f"{'Model':<25} {'Test Acc':>10} {'CV Acc':>10} {'F1 Score':>10}")
+print("-" * 60)
 
-    for bar, val in zip(bars, sorted_vals):
-        ax.text(bar.get_x() + bar.get_width()/2,
-                bar.get_height() + 0.005,
-                f"{val:.4f}", ha="center", va="bottom",
-                fontsize=11, color=FG_COLOR, fontweight="bold")
+best_model = max(all_results, key=lambda r: r["test_acc"])
 
-    ax.set_title("Decision Tree — Feature Importance",
-                 fontsize=14, fontweight="bold", pad=15, color=FG_COLOR)
-    ax.set_xlabel("Feature", fontsize=11)
-    ax.set_ylabel("Importance Score", fontsize=11)
-    ax.set_ylim(0, max(sorted_vals) * 1.18)
-    ax.spines[["top","right"]].set_visible(False)
-    plt.tight_layout()
-    save_fig("07_decision_tree_feature_importance.png")
+for result in all_results:
+    marker = " <-- BEST" if result["name"] == best_model["name"] else ""
+    print(f"{result['name']:<25} {result['test_acc']:>10.4f} {result['cv_acc']:>10.4f} {result['f1']:>10.4f}{marker}")
 
+print("=" * 60)
+print("\nBest performing model:", best_model["name"])
+print("Test Accuracy:", round(best_model["test_acc"], 4))
+print("CV Accuracy:", round(best_model["cv_acc"], 4))
+print("F1 Score:", round(best_model["f1"], 4))
 
-# =============================================================================
-# === SECTION 6: SUMMARY TABLE ================================================
-# =============================================================================
-
-def print_summary(results):
-    """Print a formatted model comparison table and highlight the winner."""
-    header = f"\n{'='*68}\n{'MODEL PERFORMANCE SUMMARY':^68}\n{'='*68}"
-    print(header)
-    print(f"{'Model':<24} {'Test Acc':>10} {'CV Acc':>10} {'Best F1':>10}")
-    print("-" * 68)
-
-    best_test = max(results, key=lambda r: r["test_acc"])
-    for r in results:
-        marker = "  ← BEST" if r["name"] == best_test["name"] else ""
-        print(f"{r['name']:<24} "
-              f"{r['test_acc']:>10.4f} "
-              f"{r['cv_acc']:>10.4f} "
-              f"{r['best_f1']:>10.4f}"
-              f"{marker}")
-    print("=" * 68)
-    print(f"\n🏆  BEST MODEL: {best_test['name'].upper()}")
-    print(f"    Test Accuracy : {best_test['test_acc']:.4f}")
-    print(f"    CV  Accuracy  : {best_test['cv_acc']:.4f}")
-    print(f"    Weighted F1   : {best_test['best_f1']:.4f}")
-
-
-# =============================================================================
-# === MAIN ====================================================================
-# =============================================================================
-
-def main():
-    print("\n" + "="*68)
-    print("  ML RETAIL PROJECT — Customer Transaction Value Prediction")
-    print("="*68)
-
-    # ── 1. Load data ──────────────────────────────────────────────────────────
-    df_raw = load_dataset()
-
-    # ── 2. Preprocess ─────────────────────────────────────────────────────────
-    df, X_train, X_test, y_train, y_test, features = preprocess(df_raw)
-
-    # ── 3. Visualisations (data exploration) ──────────────────────────────────
-    print("\n[PLOTS] Generating exploratory visualisations …")
-    plot_customer_value_distribution(df)
-    plot_top10_countries(df)
-    plot_correlation_heatmap(df)
-
-    # ── 4. KNN Elbow Method ───────────────────────────────────────────────────
-    K_RANGE   = range(1, 21)
-    best_k, knn_cv_scores = find_best_k(X_train, y_train, K_RANGE)
-    plot_knn_elbow(K_RANGE, knn_cv_scores, best_k)
-
-    # ── 5. Define models ──────────────────────────────────────────────────────
-    models = [
-        ("Logistic Regression",
-         LogisticRegression(max_iter=1000, random_state=42, solver="lbfgs")),
-        ("Decision Tree",
-         DecisionTreeClassifier(max_depth=5, random_state=42)),
-        ("KNN (k={})".format(best_k),
-         KNeighborsClassifier(n_neighbors=best_k)),
-    ]
-
-    # ── 6. Train & evaluate all models ───────────────────────────────────────
-    results = []
-    for name, model in models:
-        res = train_evaluate_model(name, model, X_train, X_test, y_train, y_test)
-        results.append(res)
-
-    # ── 7. Confusion matrices (all models) ───────────────────────────────────
-    plot_confusion_matrices(results)
-
-    # ── 8. Model comparison chart ────────────────────────────────────────────
-    plot_model_comparison(results)
-
-    # ── 9. Decision Tree feature importance ──────────────────────────────────
-    dt_result = next(r for r in results if "Decision Tree" in r["name"])
-    plot_feature_importance(dt_result, features)
-
-    # ── 10. Final summary ────────────────────────────────────────────────────
-    print_summary(results)
-
-    print("\n" + "="*68)
-    print("  ✅  PROJECT COMPLETE — All plots saved to /plots")
-    print("="*68 + "\n")
-
-
-if __name__ == "__main__":
-    main()
+print("\n--- PROJECT COMPLETE ---")
+print("All plots saved in the /plots folder")
