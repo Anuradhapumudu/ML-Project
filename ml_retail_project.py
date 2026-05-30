@@ -21,7 +21,19 @@ def install_if_missing(packages):
             __import__(import_name)
         except ImportError:
             print(f"[SETUP] Installing missing package: {pkg}")
-            subprocess.check_call([sys.executable, "-m", "pip", "install", pkg, "--quiet"])
+            # Try standard install first; fall back to --break-system-packages
+            # for Homebrew-managed Python on macOS (PEP 668)
+            for extra_flags in [[], ["--break-system-packages"], ["--user"]]:
+                try:
+                    subprocess.check_call(
+                        [sys.executable, "-m", "pip", "install", pkg, "--quiet"] + extra_flags,
+                        stderr=subprocess.DEVNULL
+                    )
+                    break
+                except subprocess.CalledProcessError:
+                    continue
+            else:
+                print(f"[WARN] Could not install {pkg}. Please run: pip install {pkg}")
 
 install_if_missing(REQUIRED)
 
@@ -74,18 +86,29 @@ os.makedirs(PLOTS_DIR, exist_ok=True)
 
 def download_dataset(save_path="online_retail.xlsx"):
     """Download the UCI Online Retail dataset (Excel format)."""
+    # Honour env-var override: USE_SYNTHETIC=1 python ml_retail_project.py
+    if os.environ.get("USE_SYNTHETIC", "").strip() == "1":
+        print("[DATA] USE_SYNTHETIC=1 → skipping download.", flush=True)
+        return None
+
     url = ("https://archive.ics.uci.edu/ml/machine-learning-databases/"
            "00352/Online%20Retail.xlsx")
-    print(f"[DATA] Downloading Online Retail dataset from UCI …")
+    print("[DATA] Attempting to download Online Retail dataset from UCI …", flush=True)
+    print("[DATA] (connect=5s, read=20s — will use synthetic data if unavailable)", flush=True)
     try:
-        response = requests.get(url, timeout=60)
+        # (connect_timeout, read_timeout) — prevents hanging on slow servers
+        response = requests.get(url, timeout=(5, 20), stream=True)
         response.raise_for_status()
+        total = 0
         with open(save_path, "wb") as f:
-            f.write(response.content)
-        print(f"[DATA] Saved to {save_path}")
+            for chunk in response.iter_content(chunk_size=65536):
+                f.write(chunk)
+                total += len(chunk)
+        print(f"[DATA] Downloaded {total/1024:.0f} KB → saved to {save_path}", flush=True)
         return save_path
     except Exception as e:
-        print(f"[WARN] Download failed ({e}). Generating synthetic dataset …")
+        print(f"[WARN] Download failed ({type(e).__name__}: {e}).", flush=True)
+        print("[DATA] Falling back to synthetic dataset …", flush=True)
         return None
 
 

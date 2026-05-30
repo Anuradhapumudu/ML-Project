@@ -21,9 +21,6 @@ build/
 *.csv
 *.xls
 
-# Generated plots (generated at runtime)
-plots/
-
 # OS
 .DS_Store
 Thumbs.db
