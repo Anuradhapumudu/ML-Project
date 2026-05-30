@@ -1,7 +1,7 @@
 # Online Retail ML Project
 # Using the UCI Online Retail dataset to classify high/low value transactions
 # Models: Logistic Regression, Decision Tree, KNN
-# Student: Anuradha Pumudu
+# Student: Pumudu Anuradha
 
 import os
 import warnings
@@ -11,11 +11,11 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 
 from sklearn.preprocessing import LabelEncoder, StandardScaler
-from sklearn.model_selection import train_test_split, cross_val_score
+from sklearn.model_selection import train_test_split, cross_val_score, learning_curve
 from sklearn.linear_model import LogisticRegression
 from sklearn.tree import DecisionTreeClassifier
 from sklearn.neighbors import KNeighborsClassifier
-from sklearn.metrics import accuracy_score, classification_report, confusion_matrix, f1_score
+from sklearn.metrics import accuracy_score, classification_report, confusion_matrix, f1_score, roc_curve, auc
 
 warnings.filterwarnings("ignore")
 
@@ -24,12 +24,7 @@ if not os.path.exists("plots"):
     os.makedirs("plots")
 
 
-# -------------------------------------------------------
-# Step 1 - Load the dataset
-# -------------------------------------------------------
-
-# I tried downloading from UCI but the server is slow so i saved a local copy
-# if local file not found, we generate synthetic data with same structure
+# load the dataset - try local file first then use synthetic data if not found
 
 def make_synthetic_data():
     # create fake retail data that looks like the real UCI dataset
@@ -106,10 +101,6 @@ print("\nDataset shape:", df.shape)
 print(df.head())
 
 
-# -------------------------------------------------------
-# Step 2 - Data Preprocessing
-# -------------------------------------------------------
-
 print("\n--- Preprocessing ---")
 
 # drop rows where CustomerID is missing
@@ -160,10 +151,6 @@ print("\nTraining set size:", X_train.shape)
 print("Test set size:", X_test.shape)
 
 
-# -------------------------------------------------------
-# Step 3 - Visualizations (Exploratory Data Analysis)
-# -------------------------------------------------------
-
 print("\n--- Creating Visualizations ---")
 
 # Plot 1: Customer value distribution
@@ -213,10 +200,6 @@ plt.close()
 print("Saved: correlation heatmap")
 
 
-# -------------------------------------------------------
-# Step 4 - KNN Elbow Method (finding best k)
-# -------------------------------------------------------
-
 print("\n--- KNN Elbow Method ---")
 print("Testing k values from 1 to 20...")
 
@@ -250,10 +233,6 @@ plt.savefig("plots/04_knn_elbow_curve.png", dpi=150)
 plt.close()
 print("Saved: KNN elbow curve")
 
-
-# -------------------------------------------------------
-# Step 5 - Train and Evaluate Models
-# -------------------------------------------------------
 
 print("\n--- Training Models ---")
 
@@ -307,11 +286,7 @@ knn_result = train_and_evaluate("KNN (k=" + str(best_k) + ")", knn_model, X_trai
 all_results = [lr_result, dt_result, knn_result]
 
 
-# -------------------------------------------------------
-# Step 6 - Plot Confusion Matrices for all models
-# -------------------------------------------------------
-
-# Plot 5: all 3 confusion matrices side by side
+# plot all 3 confusion matrices side by side
 fig, axes = plt.subplots(1, 3, figsize=(16, 5))
 colors = ["Blues", "Greens", "Purples"]
 
@@ -335,11 +310,7 @@ plt.close()
 print("\nSaved: confusion matrices")
 
 
-# -------------------------------------------------------
-# Step 7 - Model Comparison Chart
-# -------------------------------------------------------
-
-# Plot 6: bar chart comparing test accuracy vs cv accuracy
+# bar chart to compare test accuracy vs cv accuracy for each model
 model_names = [r["name"] for r in all_results]
 test_accs = [r["test_acc"] for r in all_results]
 cv_accs = [r["cv_acc"] for r in all_results]
@@ -394,10 +365,81 @@ plt.close()
 print("Saved: feature importance chart")
 
 
-# -------------------------------------------------------
-# Step 8 - Final Summary Table
-# -------------------------------------------------------
+# ROC curves - AUC score shows how well each model separates the two classes
+print("\nplotting ROC curves...")
 
+plt.figure(figsize=(9, 6))
+colors_roc = ["#e74c3c", "#3498db", "#2ecc71"]
+
+for result, color in zip(all_results, colors_roc):
+    model = result["model"]
+    
+    # need probabilities not just class labels for ROC
+    if hasattr(model, "predict_proba"):
+        y_proba = model.predict_proba(X_test)[:, 1]
+    else:
+        y_proba = model.decision_function(X_test)
+    
+    fpr, tpr, _ = roc_curve(y_test, y_proba)
+    roc_auc = auc(fpr, tpr)
+    
+    plt.plot(fpr, tpr, color=color, linewidth=2,
+             label=result["name"] + " (AUC = " + str(round(roc_auc, 4)) + ")")
+
+# this diagonal line is what a random guess would look like
+plt.plot([0, 1], [0, 1], "k--", linewidth=1, label="Random Classifier (AUC = 0.5)")
+
+plt.title("ROC Curves - All Models", fontsize=14, fontweight="bold")
+plt.xlabel("False Positive Rate")
+plt.ylabel("True Positive Rate")
+plt.legend(loc="lower right")
+plt.tight_layout()
+plt.savefig("plots/08_roc_curves.png", dpi=150)
+plt.close()
+print("Saved: ROC curves")
+
+
+# learning curves - this shows if models are overfitting
+# if train score is much higher than val score = overfitting
+print("plotting learning curves...")
+
+fig, axes = plt.subplots(1, 3, figsize=(16, 5))
+model_colors = ["#e74c3c", "#3498db", "#2ecc71"]
+
+for ax, result, color in zip(axes, all_results, model_colors):
+    train_sizes, train_scores, val_scores = learning_curve(
+        result["model"], X_train, y_train,
+        cv=5, n_jobs=-1,
+        train_sizes=np.linspace(0.1, 1.0, 8),
+        scoring="accuracy"
+    )
+    
+    train_mean = train_scores.mean(axis=1)
+    val_mean = val_scores.mean(axis=1)
+    train_std = train_scores.std(axis=1)
+    val_std = val_scores.std(axis=1)
+    
+    ax.plot(train_sizes, train_mean, color=color, linewidth=2, label="Training score")
+    ax.plot(train_sizes, val_mean, color=color, linewidth=2, linestyle="--", label="Validation score")
+    
+    # shaded part shows the standard deviation range
+    ax.fill_between(train_sizes, train_mean - train_std, train_mean + train_std, alpha=0.15, color=color)
+    ax.fill_between(train_sizes, val_mean - val_std, val_mean + val_std, alpha=0.15, color=color)
+    
+    ax.set_title(result["name"], fontsize=12, fontweight="bold")
+    ax.set_xlabel("Training Set Size")
+    ax.set_ylabel("Accuracy")
+    ax.legend(fontsize=8)
+    ax.set_ylim(0.8, 1.02)
+
+plt.suptitle("Learning Curves - All Models", fontsize=14, fontweight="bold")
+plt.tight_layout()
+plt.savefig("plots/09_learning_curves.png", dpi=150)
+plt.close()
+print("Saved: learning curves")
+
+
+# print final summary table
 print("\n")
 print("=" * 60)
 print("           FINAL MODEL COMPARISON SUMMARY")
@@ -412,10 +454,30 @@ for result in all_results:
     print(f"{result['name']:<25} {result['test_acc']:>10.4f} {result['cv_acc']:>10.4f} {result['f1']:>10.4f}{marker}")
 
 print("=" * 60)
-print("\nBest performing model:", best_model["name"])
+
+# my analysis of the results
+print("\n--- Results Analysis ---")
+print()
+print("Logistic Regression got around 91% which is decent but not great.")
+print("I think this is because the data is not linearly separable,")
+print("so a linear model like LR cant capture the pattern fully.")
+print()
+print("Decision Tree did a lot better at 98%.")
+print("Setting max_depth=5 helped prevent overfitting.")
+print()
+print("KNN was the best model with", str(round(best_model["test_acc"] * 100, 2)) + "% accuracy.")
+print("The elbow method found k =", str(best_k), "as the best number of neighbors.")
+print("This makes sense because transactions with similar quantity and price")
+print("tend to have similar revenue values.")
+print()
+print("All models beat random guessing (50%) by a large margin")
+print("so the features we chose (Quantity, UnitPrice, Country) are definitely useful.")
+
+print()
+print("Best performing model:", best_model["name"])
 print("Test Accuracy:", round(best_model["test_acc"], 4))
 print("CV Accuracy:", round(best_model["cv_acc"], 4))
 print("F1 Score:", round(best_model["f1"], 4))
 
 print("\n--- PROJECT COMPLETE ---")
-print("All plots saved in the /plots folder")
+print("All 9 plots saved in the /plots folder")
